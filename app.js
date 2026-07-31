@@ -10,7 +10,7 @@ const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
 const MESES = ["janeiro","fevereiro","março","abril","maio","junho","julho","agosto","setembro","outubro","novembro","dezembro"];
 const MES_ABR = ["jan","fev","mar","abr","mai","jun","jul","ago","set","out","nov","dez"];
 const CHAVE = "ctadv_painel_v2";
-const DADOS = window.DADOS || { meta:{}, pastas:[], casos:[] };
+let DADOS = window.DADOS || { meta:{}, pastas:[], casos:[] };
 
 /* Modo de operação: com File System Access grava em disco; sem ela, só enfileira. */
 const MODO_FS = !!(window.isSecureContext && window.showDirectoryPicker);
@@ -186,14 +186,47 @@ async function conectarPasta(){
   try {
     raizHandle = await window.showDirectoryPicker({ mode:"readwrite", startIn:"documents" });
     await guardarHandle(raizHandle);
-    toast("Pasta conectada: " + raizHandle.name, "ok");
+    const n = await carregarDadosDaPasta();
+    toast(n ? `Pasta conectada — ${n} caso(s) carregado(s) do seu computador.` : "Pasta conectada: " + raizHandle.name, "ok");
     renderTudo();
   } catch(e){ if (e.name !== "AbortError") toast("Não foi possível conectar: " + e.message, "erro"); }
 }
 async function restaurarPasta(){
   if (!MODO_FS) return;
   const h = await lerHandle();
-  if (h && await temPermissao(h, true)) { raizHandle = h; renderTudo(); }
+  if (h && await temPermissao(h, true)) { raizHandle = h; await carregarDadosDaPasta(); renderTudo(); }
+}
+
+/* ---------- Carregar dados.js de dentro da pasta conectada ----------
+   É isto que faz a versão publicada funcionar: o programa vem da internet,
+   os dados vêm do disco (Google Drive sincronizado). Nada de cliente
+   trafega pela rede.                                                     */
+const CAMINHOS_DADOS = [
+  ["dados.js"],
+  ["02_CONTROLE","painel","dados.js"],
+  ["painel","dados.js"],
+  ["02_CONTROLE","dados.js"]
+];
+async function carregarDadosDaPasta(){
+  if (!raizHandle) return 0;
+  for (const caminho of CAMINHOS_DADOS){
+    try {
+      let dir = raizHandle;
+      for (const parte of caminho.slice(0,-1)) dir = await dir.getDirectoryHandle(parte);
+      const fh = await dir.getFileHandle(caminho[caminho.length-1]);
+      const txt = await (await fh.getFile()).text();
+      const alvo = {};
+      new Function("window", txt)(alvo);          // executa isolado; não toca no window real
+      if (alvo.DADOS && Array.isArray(alvo.DADOS.casos)){
+        DADOS = alvo.DADOS;
+        estado.origemDados = caminho.join("/");
+        salvar();
+        return DADOS.casos.length;
+      }
+    } catch(e){ /* tenta o próximo caminho */ }
+  }
+  toast("Pasta conectada, mas não achei o dados.js. Esperado em 02_CONTROLE/painel/dados.js.", "alerta");
+  return 0;
 }
 async function navegar(caminho){            // caminho relativo à raiz, ex.: ["01_CLIENTES","Fulano"]
   let dir = raizHandle;
@@ -313,8 +346,11 @@ function renderStatus(){
   sc.innerHTML = `<i class="ponto"></i>${naoConf} prazo(s) estimado(s) aguardando confirmação`;
 
   const sm = $("#selo-modo");
-  if (MODO_FS && raizHandle){ sm.className = "selo selo-ok"; sm.textContent = "Pasta conectada · gravação ativa"; }
-  else if (MODO_FS){ sm.className = "selo selo-alerta"; sm.textContent = "Conectar pasta para gravar"; }
+  if (MODO_FS && raizHandle){
+    sm.className = "selo selo-ok";
+    sm.textContent = DADOS.casos.length ? "Pasta conectada · dados carregados do disco" : "Pasta conectada · gravação ativa";
+  }
+  else if (MODO_FS){ sm.className = "selo selo-alerta"; sm.textContent = "Conectar pasta para carregar os casos"; }
   else { sm.className = "selo selo-neutro"; sm.textContent = "Modo leitura · fila de arquivamento"; }
 }
 
@@ -1011,7 +1047,11 @@ function importarLocal(){
 async function atualizar(){
   const b = $("#btn-refresh"); b.classList.add("girando");
   estado.vistoEm = Date.now(); salvar();
-  try { if (MODO_FS && !raizHandle) await restaurarPasta(); renderTudo(); }
+  try {
+    if (MODO_FS && !raizHandle) await restaurarPasta();
+    else if (MODO_FS && raizHandle) await carregarDadosDaPasta();
+    renderTudo();
+  }
   finally { setTimeout(() => b.classList.remove("girando"), 600); }
   toast("Painel atualizado.","ok");
 }
