@@ -1,0 +1,33 @@
+# ==========================================================================
+# DADOS DE CLIENTE NÃO SOBEM PARA O GIT — sigilo profissional e LGPD.
+# Este arquivo é a barreira. Não remova estas linhas.
+# ==========================================================================
+dados.js
+dados-*.js
+*.json
+!package.json
+
+# Backups locais exportados pelo painel
+painel-local-*.json
+
+# Agendas geradas (contêm nome de cliente e detalhe de caso)
+*.ics
+
+# Documentos
+*.pdf
+*.docx
+*.doc
+*.xlsx
+*.csv
+*.mp4
+*.mov
+*.jpg
+*.jpeg
+*.png
+*.heic
+
+# Sistema
+desktop.ini
+Thumbs.db
+.DS_Store
+*~

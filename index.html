@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="pt-BR" data-tema="claro">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Painel de controle do escritório — Caio Trombini Advocacia">
+<meta name="robots" content="noindex, nofollow, noarchive">
+<title>Painel do Escritório · Caio Trombini Advocacia</title>
+<link rel="stylesheet" href="estilo.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>&#9878;</text></svg>">
+</head>
+<body>
+<a class="pular" href="#conteudo">Pular para o conteúdo</a>
+
+<header>
+  <div class="cab-topo">
+    <div class="marca">
+      <h1>Caio Trombini Advocacia</h1>
+      <span>OAB/SP 454.679 · Painel do Escritório</span>
+    </div>
+    <div class="cab-espaco"></div>
+    <div class="busca-wrap">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+      <input id="busca" type="search" placeholder="Buscar em tudo…" aria-label="Buscar em todo o painel" autocomplete="off">
+      <kbd class="busca-atalho">/</kbd>
+    </div>
+    <button class="btn-icone" id="btn-refresh" title="Atualizar painel (R)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 11-2.6-6.4M21 3v6h-6"/></svg>Atualizar
+    </button>
+    <button class="btn-icone" id="btn-conectar" title="Autorizar o acesso à pasta ADVOCACIA">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>Conectar pasta
+    </button>
+    <button class="btn-icone" id="btn-ics" title="Baixar agenda para o Google Calendar">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>.ics
+    </button>
+    <button class="btn-icone" id="btn-print" title="Imprimir ou salvar em PDF">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+    </button>
+    <button class="btn-icone" id="btn-tema" title="Alternar tema" aria-label="Alternar tema claro e escuro"></button>
+  </div>
+
+  <div class="faixa-status">
+    <span id="selo-atualizacao" class="selo selo-ok"><i class="ponto"></i><span id="txt-atualizacao"></span></span>
+    <span class="selo selo-neutro" id="selo-hoje"></span>
+    <span id="selo-modo" class="selo selo-neutro"></span>
+    <span id="selo-confirmar" class="selo selo-alerta oculto"></span>
+    <span class="espaco"></span>
+    <span id="contador-busca" class="cnt-busca"></span>
+  </div>
+
+  <nav class="abas" role="tablist" aria-label="Seções do painel">
+    <button role="tab" aria-selected="true"  data-alvo="v-painel">Painel</button>
+    <button role="tab" aria-selected="false" data-alvo="v-casos">Casos <span class="pill" id="p-casos"></span></button>
+    <button role="tab" aria-selected="false" data-alvo="v-agenda">Agenda <span class="pill" id="p-agenda"></span></button>
+    <button role="tab" aria-selected="false" data-alvo="v-esc">Escritório <span class="pill" id="p-esc"></span></button>
+    <button role="tab" aria-selected="false" data-alvo="v-pend">Pendências <span class="pill" id="p-pend"></span></button>
+    <button role="tab" aria-selected="false" data-alvo="v-arq">Arquivos <span class="pill oculto" id="p-arq"></span></button>
+    <button role="tab" aria-selected="false" data-alvo="v-acessos">Acessos</button>
+  </nav>
+</header>
+
+<main id="conteudo">
+
+  <section class="painel" id="v-painel" role="tabpanel" aria-label="Painel geral">
+    <div class="grade g4 mb20" id="kpis"></div>
+    <div class="grade g2">
+      <div>
+        <h2 class="secao">Alertas e pontos de atenção</h2>
+        <div class="cartao cartao-p" id="alertas"></div>
+      </div>
+      <div>
+        <h2 class="secao">Próximos 45 dias</h2>
+        <div class="cartao cartao-p"><ul class="tl" id="tl-proximos"></ul></div>
+      </div>
+    </div>
+    <h2 class="secao mt22">Andamento por caso <span class="dica-cab">arraste arquivos sobre um caso para arquivar</span></h2>
+    <div class="grade g2" id="mini-casos"></div>
+  </section>
+
+  <section class="painel" id="v-casos" role="tabpanel" aria-label="Casos" hidden></section>
+
+  <section class="painel" id="v-agenda" role="tabpanel" aria-label="Agenda" hidden>
+    <div class="grade g2 topo-alinha">
+      <div class="cartao cartao-p">
+        <div class="cal-cab">
+          <button class="btn-icone" id="cal-ant" aria-label="Mês anterior">‹</button>
+          <h3 id="cal-titulo"></h3>
+          <button class="btn-icone" id="cal-prox" aria-label="Próximo mês">›</button>
+          <button class="btn-icone" id="cal-hoje">Hoje</button>
+          <span class="espaco"></span>
+          <span class="dica-cab">duplo clique num dia para criar</span>
+        </div>
+        <table class="cal"><thead><tr>
+          <th>Dom</th><th>Seg</th><th>Ter</th><th>Qua</th><th>Qui</th><th>Sex</th><th>Sáb</th>
+        </tr></thead><tbody id="cal-corpo"></tbody></table>
+        <div class="legenda">
+          <span><i class="lg e-perigo"></i>vencido</span>
+          <span><i class="lg e-alerta"></i>até 7 dias</span>
+          <span><i class="lg e-ok"></i>compromisso de caso</span>
+          <span><i class="lg e-info"></i>escritório</span>
+        </div>
+      </div>
+      <div>
+        <h2 class="secao">Tudo que está agendado</h2>
+        <div class="cartao cartao-p"><ul class="tl" id="tl-todos"></ul></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="painel" id="v-esc" role="tabpanel" aria-label="Compromissos do escritório" hidden>
+    <div class="barra-acoes">
+      <button class="btn-principal" id="bt-novo-comp">+ Novo compromisso</button>
+      <button class="btn-icone" id="bt-reclass" title="Verifica se algum compromisso pertence a um caso">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 11-2.6-6.4M21 3v6h-6"/></svg>Atualizar vínculos
+      </button>
+      <span class="espaco"></span>
+      <button class="btn-icone" id="btn-exportar" title="Baixar backup dos seus dados locais">Backup</button>
+      <button class="btn-icone" id="btn-importar" title="Restaurar backup">Restaurar</button>
+    </div>
+    <div class="grade g2 topo-alinha">
+      <div class="cartao cartao-p">
+        <div class="cal-cab">
+          <button class="btn-icone" id="cale-ant" aria-label="Mês anterior">‹</button>
+          <h3 id="cale-titulo"></h3>
+          <button class="btn-icone" id="cale-prox" aria-label="Próximo mês">›</button>
+          <button class="btn-icone" id="cale-hoje">Hoje</button>
+          <span class="espaco"></span>
+          <span class="dica-cab">duplo clique num dia</span>
+        </div>
+        <table class="cal"><thead><tr>
+          <th>Dom</th><th>Seg</th><th>Ter</th><th>Qua</th><th>Qui</th><th>Sex</th><th>Sáb</th>
+        </tr></thead><tbody id="cale-corpo"></tbody></table>
+      </div>
+      <div id="esc-listas"></div>
+    </div>
+  </section>
+
+  <section class="painel" id="v-pend" role="tabpanel" aria-label="Pendências" hidden></section>
+
+  <section class="painel" id="v-arq" role="tabpanel" aria-label="Arquivos" hidden>
+    <div id="arq-conteudo"></div>
+  </section>
+
+  <section class="painel" id="v-acessos" role="tabpanel" aria-label="Acessos e credenciais" hidden></section>
+
+</main>
+
+<footer class="rodape">
+  <strong>Caio Trombini Advocacia</strong> · OAB/SP 454.679 — documento de uso interno, coberto por sigilo profissional.
+  Prazos marcados como <em>estimados</em> são cálculo automático e <strong>precisam de conferência</strong> antes de
+  qualquer decisão processual. Este painel não armazena senhas.
+  <div class="atalhos">Atalhos: <code>/</code> buscar · <code>1</code>–<code>7</code> abas · <code>N</code> novo compromisso · <code>R</code> atualizar · <code>Esc</code> limpar busca</div>
+</footer>
+
+<dialog id="dlg-comp" class="dlg">
+  <form id="form-comp" method="dialog">
+    <h3 id="form-titulo">Novo compromisso</h3>
+    <input type="hidden" id="f-indice">
+    <div class="campo-form larga">
+      <label for="f-titulo">Título</label>
+      <input type="text" id="f-titulo" required placeholder="ex.: Atendimento Dona Célia" autocomplete="off">
+    </div>
+    <div class="linha-form">
+      <div class="campo-form"><label for="f-data">Data</label><input type="date" id="f-data" required></div>
+      <div class="campo-form"><label for="f-hora">Hora</label><input type="time" id="f-hora"></div>
+      <div class="campo-form"><label for="f-tipo">Tipo</label><select id="f-tipo"></select></div>
+    </div>
+    <div class="linha-form">
+      <div class="campo-form"><label for="f-pessoa">Pessoa</label><input type="text" id="f-pessoa" placeholder="quem participa" autocomplete="off"></div>
+      <div class="campo-form"><label for="f-local">Local</label><input type="text" id="f-local" placeholder="escritório, fórum, on-line" autocomplete="off"></div>
+    </div>
+    <div class="campo-form larga">
+      <label for="f-caso">Vincular a um caso</label>
+      <select id="f-caso"></select>
+      <div id="f-sugestao" class="sugestao oculto"></div>
+    </div>
+    <div class="campo-form larga">
+      <label for="f-nota">Observação</label>
+      <textarea id="f-nota" rows="2" placeholder="o que levar, o que decidir"></textarea>
+    </div>
+    <div class="dlg-acoes">
+      <button type="button" class="btn-icone" id="f-cancelar">Cancelar</button>
+      <button type="submit" class="btn-principal">Salvar</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-reclass" class="dlg">
+  <h3>Vincular compromissos a casos</h3>
+  <p class="ajuda">Encontrei compromissos que parecem pertencer a um caso. Marque os que devem ser vinculados —
+  os desmarcados ficam registrados como movimentação do escritório e não perguntarei de novo.</p>
+  <ul class="rc-lista" id="rc-lista"></ul>
+  <div class="dlg-acoes">
+    <button type="button" class="btn-icone" id="rc-cancelar">Cancelar</button>
+    <button type="button" class="btn-principal" id="rc-aplicar">Aplicar</button>
+  </div>
+</dialog>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script src="dados.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
