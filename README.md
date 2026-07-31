@@ -1,7 +1,7 @@
 # Painel do Escritório
 
 Painel de controle processual para escritório de advocacia. Roda inteiro no navegador, sem servidor, sem banco de dados e sem nenhuma dependência externa — nem CDN, nem framework, nem conta em serviço de terceiros.
-
+ 
 Feito para **Caio Trombini Advocacia · OAB/SP 454.679**, mas o código não tem nada específico do escritório: os dados vivem num arquivo separado.
 
 ## O que ele faz
