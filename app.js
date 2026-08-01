@@ -964,7 +964,39 @@ function renderPills(){
   const pf = $("#p-arq"); pf.textContent = fp || ""; pf.classList.toggle("urgente", fp > 0); pf.classList.toggle("oculto", !fp);
 }
 
+/* Estado vazio: em vez de mostrar zeros mudos, explica o que fazer. */
+function renderAvisoVazio(){
+  const box = $("#aviso-vazio"); if (!box) return;
+  const vazio = !DADOS.casos.length;
+  box.classList.toggle("oculto", !vazio);
+  if (!vazio) return;
+  if (!MODO_FS){
+    box.innerHTML = `<div class="chamada">
+      <h3>Os dados não podem ser lidos neste modo</h3>
+      <p>O painel foi aberto como arquivo local (<code>file://</code>). Nesse contexto o navegador não deixa
+      um site ler pastas do disco. Abra pelo endereço publicado
+      <code>https://caiotrombini.github.io/painel-advocacia/</code> e clique em <strong>Carregar do Drive</strong>.</p>
+    </div>`;
+    return;
+  }
+  box.innerHTML = `<div class="chamada">
+    <h3>Falta um passo: carregar os dados do seu computador</h3>
+    <p>Este endereço traz só o programa. Os casos, prazos e agendas ficam no seu Google Drive e
+    <strong>nunca são enviados para a internet</strong> — é por isso que o painel começa vazio e precisa da sua autorização.</p>
+    <ol>
+      <li>Clique no botão abaixo (ou no <strong>Carregar do Drive</strong>, lá no topo)</li>
+      <li>Na janela do Windows, selecione a pasta <code>G:\\Meu Drive\\ADVOCACIA</code></li>
+      <li>Confirme em <strong>Exibir arquivos</strong> / <strong>Editar arquivos</strong></li>
+    </ol>
+    <p>O navegador guarda essa permissão. Nas próximas vezes o painel já abre com tudo carregado.</p>
+    <button class="btn-principal" id="bt-vazio-carregar">Carregar do Drive agora</button>
+  </div>`;
+  const b = $("#bt-vazio-carregar");
+  if (b) b.addEventListener("click", carregarTudoDoDrive);
+}
+
 function renderTudo(){
+  renderAvisoVazio();
   renderStatus(); renderKPIs(); renderAlertas(); renderTimelines(); renderMiniCasos();
   renderCasos(); renderPendencias(); renderPastas(); renderCalendario();
   renderEscritorio(); renderAcessos(); renderPills(); renderArquivos();
