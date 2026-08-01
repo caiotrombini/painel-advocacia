@@ -539,8 +539,19 @@ const ICO = {
   alerta:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>',
   info:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>'
 };
+/* Casos já ajuizados sem número de processo: sem ele não há acompanhamento,
+   nem guia, nem peticionamento. O painel precisa cobrar isso sozinho. */
+function semNumeroProcesso(){
+  const preAjuizamento = /pr[ée]-ajuizamento|inicial pronta|em atendimento|coleta/i;
+  return DADOS.casos.filter(c => !c.numeroProcesso && !preAjuizamento.test(c.fase || ""));
+}
+
 function renderAlertas(){
   const ordem = { perigo:0, alerta:1, info:2 }, todos = [];
+  semNumeroProcesso().forEach(c => todos.push({
+    nivel:"alerta", caso:c,
+    txt:"<strong>Sem número de processo cadastrado.</strong> A fase indica ação já ajuizada. Sem o número não há como acompanhar andamento, emitir guia ou peticionar — informe o número para destravar."
+  }));
   DADOS.casos.forEach(c => (c.alertas||[]).forEach(a => todos.push(Object.assign({}, a, { caso:c }))));
   todos.sort((a,b) => ordem[a.nivel] - ordem[b.nivel]);
   $("#alertas").innerHTML = todos.length ? todos.map(a =>
@@ -607,7 +618,7 @@ function renderMiniCasos(){
 function renderCasos(){
   $("#v-casos").innerHTML = DADOS.casos.map(c => {
     const campos = [["Área",c.area],["Fase",c.fase],["Parte contrária",c.parteContraria],
-      ["Nº do processo",c.numeroProcesso],["Foro",c.foro],["Valor da causa",moeda(c.valorCausa)],["Responsável",c.responsavel]];
+      ["Nº do processo",c.numeroProcesso || (semNumeroProcesso().includes(c) ? "⚠ FALTA — informar" : null)],["Foro",c.foro],["Valor da causa",moeda(c.valorCausa)],["Responsável",c.responsavel]];
     const prazos = todosPrazos().filter(p => p.caso.id === c.id)
       .concat(compromissos().filter(p => p.casoId === c.id))
       .sort((a,b) => a.data < b.data ? -1 : 1);
