@@ -227,7 +227,9 @@ async function conectarPasta(){
   try {
     raizHandle = await window.showDirectoryPicker({ mode:"readwrite", startIn:"documents" });
     await guardarHandle(raizHandle);
+    await resolverBase();
     const n = await carregarDadosDaPasta();
+    await carregarAgendasDaPasta();
     toast(n ? `Pasta conectada — ${n} caso(s) carregado(s) do seu computador.` : "Pasta conectada: " + raizHandle.name, "ok");
     renderTudo();
   } catch(e){ if (e.name !== "AbortError") toast("Não foi possível conectar: " + e.message, "erro"); }
@@ -237,6 +239,7 @@ async function restaurarPasta(){
   const h = await lerHandle();
   if (h && await temPermissao(h, true)) {
     raizHandle = h;
+    await resolverBase();
     await carregarDadosDaPasta();
     await carregarAgendasDaPasta();
     renderTudo();
@@ -257,7 +260,7 @@ async function carregarDadosDaPasta(){
   if (!raizHandle) return 0;
   for (const caminho of CAMINHOS_DADOS){
     try {
-      let dir = raizHandle;
+      let dir = baseHandle || raizHandle;
       for (const parte of caminho.slice(0,-1)) dir = await dir.getDirectoryHandle(parte);
       const fh = await dir.getFileHandle(caminho[caminho.length-1]);
       const txt = await (await fh.getFile()).text();
@@ -290,7 +293,7 @@ async function carregarAgendasDaPasta(){
   let dir = null;
   for (const caminho of PASTAS_AGENDA){
     try {
-      let d = raizHandle;
+      let d = baseHandle || raizHandle;
       for (const parte of caminho) d = await d.getDirectoryHandle(parte);
       dir = d; break;
     } catch(e){ /* tenta a próxima */ }
@@ -326,12 +329,13 @@ async function carregarTudoDoDrive(){
     } else if (!await temPermissao(raizHandle, true)){
       toast("Permissão de acesso à pasta negada.", "erro"); return;
     }
+    await resolverBase();
     const nCasos = await carregarDadosDaPasta();
     const nEventos = await carregarAgendasDaPasta();
     const nPastas = await contarPastasDeCaso();
     renderTudo();
     const partes = [];
-    partes.push(nCasos ? `${nCasos} caso(s)` : "nenhum caso — confira 02_CONTROLE/painel/dados.js");
+    partes.push(nCasos ? `${nCasos} caso(s)` : `nenhum caso encontrado a partir de "${(baseHandle||raizHandle).name}" — selecione a pasta ADVOCACIA`);
     if (nEventos) partes.push(`${nEventos} evento(s) de ${fontesAgenda.length} agenda(s)`);
     if (nPastas) partes.push(`${nPastas} pasta(s) de cliente`);
     toast("Carregado do Drive: " + partes.join(" · "), nCasos ? "ok" : "alerta");
@@ -341,15 +345,50 @@ async function carregarTudoDoDrive(){
 }
 async function contarPastasDeCaso(){
   try {
-    let d = raizHandle;
-    try { d = await raizHandle.getDirectoryHandle("01_CLIENTES"); } catch(e){ /* a raiz pode já ser 01_CLIENTES */ }
+    let d = baseHandle || raizHandle;
+    try { d = await d.getDirectoryHandle("01_CLIENTES"); } catch(e){ /* a base pode já ser 01_CLIENTES */ }
     let n = 0;
     for await (const [nome, h] of d.entries()) if (h.kind === "directory" && !nome.startsWith("_")) n++;
     return n;
   } catch(e){ return 0; }
 }
-async function navegar(caminho){            // caminho relativo à raiz, ex.: ["01_CLIENTES","Fulano"]
-  let dir = raizHandle;
+/* ---------- Localizar a pasta ADVOCACIA ----------
+   O usuário pode selecionar a raiz do G:, o "Meu Drive", a própria ADVOCACIA
+   ou até a pasta do painel. Em vez de exigir acerto, o painel procura. */
+let baseHandle = null;
+async function ehPastaEscritorio(dir){
+  for (const alvo of ["02_CONTROLE","01_CLIENTES"]){
+    try { await dir.getDirectoryHandle(alvo); return true; } catch(e){}
+  }
+  return false;
+}
+async function procurarEscritorio(dir, profundidade){
+  if (await ehPastaEscritorio(dir)) return dir;
+  if (profundidade <= 0) return null;
+  const subs = [];
+  try {
+    for await (const [nome, h] of dir.entries()){
+      if (h.kind !== "directory") continue;
+      if (nome.startsWith("$") || nome.startsWith(".") || nome === "System Volume Information") continue;
+      if (nome.toUpperCase() === "ADVOCACIA") return h;      // atalho: achou pelo nome
+      subs.push(h);
+      if (subs.length > 40) break;                           // não varre disco inteiro
+    }
+  } catch(e){ return null; }
+  for (const h of subs){
+    const r = await procurarEscritorio(h, profundidade - 1);
+    if (r) return r;
+  }
+  return null;
+}
+async function resolverBase(){
+  if (!raizHandle) { baseHandle = null; return null; }
+  baseHandle = await procurarEscritorio(raizHandle, 3) || raizHandle;
+  return baseHandle;
+}
+
+async function navegar(caminho){            // caminho relativo à pasta do escritório
+  let dir = baseHandle || raizHandle;
   for (const parte of caminho) dir = await dir.getDirectoryHandle(parte, { create:true });
   return dir;
 }
