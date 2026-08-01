@@ -75,9 +75,50 @@ function compromissos(){
     });
   }).sort((a,b) => (a.data + (a.hora||"")) < (b.data + (b.hora||"")) ? -1 : 1);
 }
+/* Agendas externas (.ics do Google, do Outlook, ou qualquer outro) */
+let agendaExterna = [];
 function agendaCompleta(){
-  return todosPrazos().concat(compromissos())
+  return todosPrazos().concat(compromissos()).concat(agendaExterna)
     .sort((a,b) => (a.data + (a.hora||"00:00")) < (b.data + (b.hora||"00:00")) ? -1 : 1);
+}
+
+/* ---------- Leitor de .ics ----------
+   Suficiente para o que Google e Outlook exportam: desdobra as linhas,
+   entende data pura e data-hora, e ignora recorrência (RRULE) porque
+   expandir regra de repetição sem biblioteca gera mais erro do que ajuda. */
+function parseICS(txt, origem, rotulo){
+  const linhas = txt.replace(/\r\n[ \t]/g, "").replace(/\n[ \t]/g, "").split(/\r?\n/);
+  const eventos = [];
+  let atual = null;
+  const desescapa = s => String(s).replace(/\\n/gi, " ").replace(/\\,/g, ",").replace(/\\;/g, ";").replace(/\\\\/g, "\\");
+  for (const linha of linhas){
+    if (linha.startsWith("BEGIN:VEVENT")){ atual = {}; continue; }
+    if (linha.startsWith("END:VEVENT")){
+      if (atual && atual.data) eventos.push(Object.assign(atual, {
+        origem, rotuloFonte: rotulo, confirmado: true, tipo: atual.tipo || "Compromisso",
+        caso: { cliente: rotulo, id: null }, chave: origem + "|" + eventos.length,
+        dias: diasAte(atual.data)
+      }));
+      atual = null; continue;
+    }
+    if (!atual) continue;
+    const sep = linha.indexOf(":");
+    if (sep < 0) continue;
+    const campo = linha.slice(0, sep), valor = linha.slice(sep + 1);
+    const nome = campo.split(";")[0].toUpperCase();
+    if (nome === "SUMMARY") atual.titulo = desescapa(valor) || "(sem título)";
+    else if (nome === "LOCATION") atual.local = desescapa(valor);
+    else if (nome === "DESCRIPTION") atual.nota = desescapa(valor).slice(0, 300);
+    else if (nome === "RRULE") atual.repete = true;
+    else if (nome === "DTSTART"){
+      const m = valor.match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2}))?/);
+      if (m){
+        atual.data = `${m[1]}-${m[2]}-${m[3]}`;
+        if (m[4]) atual.hora = `${m[4]}:${m[5]}`;
+      }
+    }
+  }
+  return eventos.filter(e => !e.repete);   // recorrentes ficam de fora, por segurança
 }
 function nivelPrazo(p){ if (p.dias < 0) return "venc"; if (p.dias <= 7) return "urg"; if (p.dias <= 30) return "prox"; return "ok"; }
 
@@ -194,7 +235,12 @@ async function conectarPasta(){
 async function restaurarPasta(){
   if (!MODO_FS) return;
   const h = await lerHandle();
-  if (h && await temPermissao(h, true)) { raizHandle = h; await carregarDadosDaPasta(); renderTudo(); }
+  if (h && await temPermissao(h, true)) {
+    raizHandle = h;
+    await carregarDadosDaPasta();
+    await carregarAgendasDaPasta();
+    renderTudo();
+  }
 }
 
 /* ---------- Carregar dados.js de dentro da pasta conectada ----------
@@ -225,8 +271,82 @@ async function carregarDadosDaPasta(){
       }
     } catch(e){ /* tenta o próximo caminho */ }
   }
-  toast("Pasta conectada, mas não achei o dados.js. Esperado em 02_CONTROLE/painel/dados.js.", "alerta");
   return 0;
+}
+
+/* ---------- Agendas externas vindas da pasta ----------
+   Qualquer .ics em 02_CONTROLE/painel/agendas/ entra no calendário.
+   O nome do arquivo define a cor: google*.ics, outlook*.ics, o resto vira "externa". */
+const PASTAS_AGENDA = [
+  ["agendas"],
+  ["02_CONTROLE","painel","agendas"],
+  ["painel","agendas"],
+  ["02_CONTROLE","agendas"]
+];
+let fontesAgenda = [];
+async function carregarAgendasDaPasta(){
+  agendaExterna = []; fontesAgenda = [];
+  if (!raizHandle) return 0;
+  let dir = null;
+  for (const caminho of PASTAS_AGENDA){
+    try {
+      let d = raizHandle;
+      for (const parte of caminho) d = await d.getDirectoryHandle(parte);
+      dir = d; break;
+    } catch(e){ /* tenta a próxima */ }
+  }
+  if (!dir) return 0;
+  for await (const [nome, h] of dir.entries()){
+    if (h.kind !== "file" || !/\.ics$/i.test(nome)) continue;
+    try {
+      const f = await h.getFile();
+      const n = semAcento(nome.toLowerCase());
+      const origem = /google|gmail/.test(n) ? "google" : /outlook|hotmail|live/.test(n) ? "outlook" : "externa";
+      const rotulo = origem === "google" ? "Google Agenda" : origem === "outlook" ? "Outlook" : nome.replace(/\.ics$/i, "");
+      const evs = parseICS(await f.text(), origem, rotulo);
+      agendaExterna = agendaExterna.concat(evs);
+      fontesAgenda.push({ nome, rotulo, origem, total: evs.length, mod: f.lastModified });
+    } catch(e){ fontesAgenda.push({ nome, rotulo:nome, origem:"externa", total:0, erro:e.message }); }
+  }
+  return agendaExterna.length;
+}
+
+/* ---------- Botão "Carregar do Drive": faz a varredura completa ---------- */
+async function carregarTudoDoDrive(){
+  const btn = $("#btn-carregar-drive");
+  if (btn) btn.disabled = true;
+  try {
+    if (!MODO_FS){
+      toast("Este modo não permite ler a pasta. Abra o painel pelo endereço publicado.", "alerta");
+      return;
+    }
+    if (!raizHandle){
+      raizHandle = await window.showDirectoryPicker({ mode:"readwrite", startIn:"documents" });
+      await guardarHandle(raizHandle);
+    } else if (!await temPermissao(raizHandle, true)){
+      toast("Permissão de acesso à pasta negada.", "erro"); return;
+    }
+    const nCasos = await carregarDadosDaPasta();
+    const nEventos = await carregarAgendasDaPasta();
+    const nPastas = await contarPastasDeCaso();
+    renderTudo();
+    const partes = [];
+    partes.push(nCasos ? `${nCasos} caso(s)` : "nenhum caso — confira 02_CONTROLE/painel/dados.js");
+    if (nEventos) partes.push(`${nEventos} evento(s) de ${fontesAgenda.length} agenda(s)`);
+    if (nPastas) partes.push(`${nPastas} pasta(s) de cliente`);
+    toast("Carregado do Drive: " + partes.join(" · "), nCasos ? "ok" : "alerta");
+  } catch(e){
+    if (e.name !== "AbortError") toast("Falha ao carregar: " + e.message, "erro");
+  } finally { if (btn) btn.disabled = false; }
+}
+async function contarPastasDeCaso(){
+  try {
+    let d = raizHandle;
+    try { d = await raizHandle.getDirectoryHandle("01_CLIENTES"); } catch(e){ /* a raiz pode já ser 01_CLIENTES */ }
+    let n = 0;
+    for await (const [nome, h] of d.entries()) if (h.kind === "directory" && !nome.startsWith("_")) n++;
+    return n;
+  } catch(e){ return 0; }
 }
 async function navegar(caminho){            // caminho relativo à raiz, ex.: ["01_CLIENTES","Fulano"]
   let dir = raizHandle;
@@ -393,7 +513,9 @@ function renderAlertas(){
 function itemTL(p, mostrarCaso){
   const d = parseData(p.data), n = nivelPrazo(p);
   const cls = n === "venc" ? "venc" : n === "urg" ? "urg" : "";
-  const selo = p.origem === "escritorio"
+  const selo = (p.origem === "google" || p.origem === "outlook" || p.origem === "externa")
+    ? `<span class="selo selo-neutro mini">${esc(p.rotuloFonte || "agenda externa")}</span>`
+    : p.origem === "escritorio"
     ? (p.vinculado ? `<span class="selo selo-ok mini">${esc(p.vinculado.cliente)}</span>` : `<span class="selo selo-info mini">escritório</span>`)
     : p.confirmado ? `<span class="selo selo-ok mini">confirmado</span>`
     : `<button class="selo selo-alerta mini bt" data-confirmar="${p.chave}" title="Marcar como conferido por você">estimado · confirmar</button>`;
@@ -512,7 +634,10 @@ function montarCalendario(alvoTitulo, alvoCorpo, ref, eventos){
         <div class="dnum">${cur.getDate()}</div>
         ${evs.map(p => {
           const n = nivelPrazo(p);
-          const cor = p.origem === "escritorio" ? (p.vinculado ? "e-ok" : "e-info")
+          const cor = p.origem === "google" ? "e-google"
+                    : p.origem === "outlook" ? "e-outlook"
+                    : p.origem === "externa" ? "e-info"
+                    : p.origem === "escritorio" ? (p.vinculado ? "e-ok" : "e-info")
                     : n === "venc" ? "e-perigo" : n === "urg" ? "e-alerta" : "";
           return `<button class="ev ${cor}" data-ev="${p.chave}" title="${esc((p.hora?p.hora+" · ":"") + p.titulo + " — " + p.caso.cliente)}">${p.hora?esc(p.hora)+" ":""}${esc(p.titulo)}</button>`;
         }).join("")}
@@ -533,7 +658,19 @@ function montarCalendario(alvoTitulo, alvoCorpo, ref, eventos){
 }
 let calRef = new Date(hojeLocal().getFullYear(), hojeLocal().getMonth(), 1);
 let calEscRef = new Date(hojeLocal().getFullYear(), hojeLocal().getMonth(), 1);
-function renderCalendario(){ montarCalendario("#cal-titulo","#cal-corpo", calRef, agendaCompleta()); }
+function renderCalendario(){
+  montarCalendario("#cal-titulo","#cal-corpo", calRef, agendaCompleta());
+  const box = $("#fontes-agenda"); if (!box) return;
+  const linhas = [`<div><b>Prazos e casos</b> — ${todosPrazos().length} · <b>Escritório</b> — ${compromissos().length}</div>`];
+  if (fontesAgenda.length){
+    fontesAgenda.forEach(f => linhas.push(
+      `<div><b>${esc(f.rotulo)}</b> — ${f.erro ? "erro ao ler: " + esc(f.erro) : f.total + " evento(s)"}${
+        f.mod ? " · atualizado em " + new Date(f.mod).toLocaleDateString("pt-BR") : ""}</div>`));
+  } else {
+    linhas.push('<div class="vazia">Nenhuma agenda externa carregada. Coloque os .ics em <code>02_CONTROLE/painel/agendas/</code> e clique em Carregar do Drive.</div>');
+  }
+  box.innerHTML = linhas.join("");
+}
 function renderCalEscritorio(){ montarCalendario("#cale-titulo","#cale-corpo", calEscRef, compromissos()); }
 
 /* ==========================================================================
@@ -754,6 +891,7 @@ const ST_ROTULO = { nao_aplica:"não se aplica", a_solicitar:"a solicitar", soli
 const ST_CLASSE = { nao_aplica:"neutro", a_solicitar:"alerta", solicitado:"info", obtido:"ok", negado:"perigo" };
 
 function renderAcessos(){
+  if (!$("#v-acessos")) return;             // aba desativada — nada a renderizar
   const linhas = DADOS.casos.map(c => `
     <h2 class="secao">${esc(c.cliente)}</h2>
     <div class="cartao cartao-p mb18">
@@ -1049,7 +1187,7 @@ async function atualizar(){
   estado.vistoEm = Date.now(); salvar();
   try {
     if (MODO_FS && !raizHandle) await restaurarPasta();
-    else if (MODO_FS && raizHandle) await carregarDadosDaPasta();
+    else if (MODO_FS && raizHandle) { await carregarDadosDaPasta(); await carregarAgendasDaPasta(); }
     renderTudo();
   }
   finally { setTimeout(() => b.classList.remove("girando"), 600); }
@@ -1066,8 +1204,8 @@ document.addEventListener("keydown", e => {
   if (e.key === "/"){ e.preventDefault(); $("#busca").focus(); return; }
   if (e.key.toLowerCase() === "n"){ e.preventDefault(); trocarAba("v-esc"); abrirFormCompromisso(null); return; }
   if (e.key.toLowerCase() === "r"){ e.preventDefault(); atualizar(); return; }
-  const abas = ["v-painel","v-casos","v-agenda","v-esc","v-pend","v-arq","v-acessos"];
-  if (/^[1-7]$/.test(e.key)) trocarAba(abas[+e.key - 1]);
+  const abas = ["v-painel","v-casos","v-agenda","v-esc","v-pend","v-arq"];
+  if (/^[1-6]$/.test(e.key)) trocarAba(abas[+e.key - 1]);
 });
 
 /* ---------- Início ---------- */
@@ -1078,7 +1216,7 @@ function iniciar(){
   $("#btn-print").addEventListener("click", () => window.print());
   $("#btn-ics").addEventListener("click", baixarICS);
   $("#btn-refresh").addEventListener("click", atualizar);
-  $("#btn-conectar").addEventListener("click", conectarPasta);
+  $("#btn-carregar-drive").addEventListener("click", carregarTudoDoDrive);
   $("#btn-exportar").addEventListener("click", exportarLocal);
   $("#btn-importar").addEventListener("click", importarLocal);
   $("#cal-ant").addEventListener("click", () => { calRef.setMonth(calRef.getMonth()-1); renderCalendario(); });
@@ -1096,7 +1234,7 @@ function iniciar(){
   $("#f-tipo").innerHTML = TIPOS_COMPROMISSO.map(t => `<option>${t}</option>`).join("");
   ["#f-titulo","#f-pessoa","#f-nota"].forEach(s => $(s).addEventListener("input", avaliarSugestao));
   $("#f-caso").addEventListener("change", () => $("#f-sugestao").classList.add("oculto"));
-  $("#btn-conectar").classList.toggle("oculto", !MODO_FS);
+  $("#btn-carregar-drive").classList.toggle("oculto", !MODO_FS);
 
   aplicarTema();
   renderTudo();

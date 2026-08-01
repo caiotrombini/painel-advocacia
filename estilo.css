@@ -6,6 +6,7 @@
   --primaria:#1a3a5c; --ouro:#a8823f;
   --perigo:#b3261e; --perigo-bg:#fdecea; --alerta:#a86800; --alerta-bg:#fff5e0;
   --ok:#1a6b40; --ok-bg:#e6f4ec; --info:#1a5f8a; --info-bg:#e7f1f8;
+  --google:#6a3fa0; --google-bg:#f0e9f8; --outlook:#0f5ba8; --outlook-bg:#e6eff9;
   --sombra:0 1px 2px rgba(16,32,48,.06),0 4px 12px rgba(16,32,48,.06);
   --sombra-alta:0 4px 24px rgba(16,32,48,.16);
   --raio:10px; --raio-p:6px;
@@ -19,6 +20,7 @@ html[data-tema="escuro"]{
   --primaria:#5b9dd9; --ouro:#d4a961;
   --perigo:#f2857c; --perigo-bg:#3a1e1c; --alerta:#e3ad4a; --alerta-bg:#3a2e14;
   --ok:#5cc98d; --ok-bg:#12301f; --info:#6fb6e0; --info-bg:#12293a;
+  --google:#b98fe0; --google-bg:#2a1c3d; --outlook:#6aa9e0; --outlook-bg:#122436;
   --sombra:0 1px 2px rgba(0,0,0,.4),0 4px 12px rgba(0,0,0,.3);
   --sombra-alta:0 4px 24px rgba(0,0,0,.55);
   color-scheme:dark;
@@ -219,6 +221,13 @@ h2.secao .cnt{font-family:var(--fonte);font-size:11px;font-weight:600;background
 .lg{width:11px;height:11px;border-radius:3px;display:block}
 .lg.e-perigo{background:var(--perigo)}.lg.e-alerta{background:var(--alerta)}
 .lg.e-ok{background:var(--ok)}.lg.e-info{background:var(--info)}
+.lg.e-google{background:var(--google)}.lg.e-outlook{background:var(--outlook)}
+.ev.e-google{background:var(--google-bg);color:var(--google)}
+.ev.e-outlook{background:var(--outlook-bg);color:var(--outlook)}
+.fontes{margin-top:10px;padding-top:10px;border-top:1px solid var(--linha);font-size:11.5px;color:var(--texto-2);
+  display:flex;flex-direction:column;gap:3px}
+.fontes b{color:var(--texto);font-weight:600}
+.fontes .vazia{color:var(--texto-3);font-style:italic}
 
 /* Arquivos */
 .arq-topo{display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap}
