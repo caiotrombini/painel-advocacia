@@ -976,6 +976,8 @@ function renderPastas(){ /* lista de pastas vive dentro da aba Arquivos neste la
    Interações
    ========================================================================== */
 function trocarAba(alvo){
+  // Se a aba salva não existe mais (removida numa atualização), volta para o Painel
+  if (!alvo || !$("#" + alvo)) alvo = "v-painel";
   $$("nav.abas button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.alvo === alvo)));
   $$(".painel").forEach(p => p.hidden = (p.id !== alvo));
   estado.aba = alvo; salvar();
