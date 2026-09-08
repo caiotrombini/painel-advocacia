@@ -497,6 +497,15 @@ function renderStatus(){
   selo.className = "selo " + (horas > 48 ? "selo-perigo" : horas > 30 ? "selo-alerta" : "selo-ok");
   if (horas > 30) txt.textContent += ` — ${Math.floor(horas/24)} dia(s) sem atualizar`;
 
+  const tarja = $("#tarja-desatualizado");
+  if (horas > 36){
+    const dias = Math.floor(horas/24);
+    tarja.textContent = `Painel desatualizado há ${dias} dia(s) — a regeneração automática não está rodando.`;
+    tarja.classList.remove("oculto");
+  } else {
+    tarja.classList.add("oculto");
+  }
+
   $("#selo-hoje").textContent = new Date().toLocaleDateString("pt-BR",{weekday:"long",day:"2-digit",month:"long",year:"numeric"});
 
   const naoConf = todosPrazos().filter(p => !p.confirmado).length;

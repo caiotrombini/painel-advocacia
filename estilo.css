@@ -37,6 +37,7 @@ input,select,textarea{font-family:inherit;font-size:inherit;color:var(--texto);b
 input:focus,select:focus,textarea:focus{border-color:var(--primaria);outline:none}
 :focus-visible{outline:2px solid var(--primaria);outline-offset:2px;border-radius:3px}
 .oculto{display:none !important}
+.tarja-desatualizado{position:sticky;top:0;z-index:1000;background:var(--perigo);color:#fff;text-align:center;font-weight:700;font-size:13px;padding:8px 16px}
 .espaco{flex:1}
 .mb12{margin-bottom:12px}.mb18{margin-bottom:18px}.mb20{margin-bottom:20px}.mt12{margin-top:12px}.mt22{margin-top:22px}
 .dim{color:var(--texto-2)}
