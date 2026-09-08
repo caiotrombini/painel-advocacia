@@ -59,6 +59,16 @@ O motivo é concreto: um painel real contém nome de cliente, telefone, históri
 
 A arquitetura foi desenhada em torno disso: **o programa é público, os dados são locais.** Você pode publicar este repositório sem risco — quem clonar recebe um painel vazio que só ganha conteúdo ao apontar para a pasta da própria pessoa.
 
+O schema de caso não tem (e não deve ganhar) campo de CPF, RG, filiação ou data de nascimento — isso é dado de qualificação para petição, não de acompanhamento processual, e fica fora do painel. Telefone de contato é a exceção: fica em `dados.js` porque alimenta o link de ligar direto da ficha do caso, e `dados.js` já não é versionado.
+
+### Trava de commit
+
+Este repositório vem com um hook de pré-commit (`.githooks/pre-commit`) que recusa qualquer commit cujo diff pareça conter CPF, RG, filiação ou data de nascimento — mesmo que caia sem querer num arquivo versionado. Ative uma vez por clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
 ## Prazos calculados
 
 Todo prazo gerado automaticamente entra marcado como **estimado**, aparece em amarelo e exige um clique de confirmação. Enquanto não confirmado, conta no aviso do topo e vai para o `.ics` com o prefixo `[ESTIMADO]`.
