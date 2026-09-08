@@ -18,7 +18,8 @@ const MODO_FS = !!(window.isSecureContext && window.showDirectoryPicker);
 /* ---------- Estado persistente ---------- */
 const estadoPadrao = {
   pend:{}, prazos:{}, tema:"claro", aba:"v-painel",
-  compromissos:[], acessos:{}, fila:[], vistoEm:null
+  compromissos:[], acessos:{}, fila:[], vistoEm:null,
+  vencidos:{}, pendPrimeiraVez:{}, ordemRisco:false
 };
 let estado = Object.assign({}, estadoPadrao);
 try { const s = localStorage.getItem(CHAVE); if (s) estado = Object.assign(estado, JSON.parse(s)); } catch (e) {}
@@ -57,10 +58,24 @@ function todosPrazos(){
   const out = [];
   DADOS.casos.forEach(c => (c.prazos||[]).forEach((p,i) => {
     const chave = c.id + "|" + i;
-    out.push(Object.assign({}, p, {
+    let item = Object.assign({}, p);
+    // M13: se o prazo traz baseChave+diasUteis, calcula de verdade em vez de
+    // depender de uma data digitada à mão como "estimado". Sem a data-base
+    // ainda registrada, não há como calcular — some da linha do tempo (o
+    // M14 já cobra a data-base faltante como pendência/alerta à parte),
+    // em vez de quebrar o painel inteiro com uma data inválida.
+    if (p.baseChave && p.diasUteis != null){
+      const baseData = c.datasBase && c.datasBase[p.baseChave];
+      if (!baseData) return;
+      const calc = calcularPrazoUteis(baseData, p.diasUteis);
+      item.data = calc.data; item.calculado = true; item.baseCalculo = calc.base; item.estimado = false;
+    }
+    if (!item.data) return;
+    out.push(Object.assign(item, {
       caso:c, chave, origem:"caso",
-      confirmado: !p.estimado || !!estado.prazos[chave],
-      dias: diasAte(p.data)
+      confirmado: !item.estimado || !!estado.prazos[chave],
+      dias: diasAte(item.data),
+      resolvido: estado.vencidos[chave] || null
     }));
   }));
   return out.sort((a,b) => a.data < b.data ? -1 : 1);
@@ -230,7 +245,7 @@ async function conectarPasta(){
     await resolverBase();
     const n = await carregarDadosDaPasta();
     await carregarAgendasDaPasta();
-    toast(n ? `Pasta conectada — ${n} caso(s) carregado(s) do seu computador.` : "Pasta conectada: " + raizHandle.name, "ok");
+    if (n >= 0) toast(n ? `Pasta conectada — ${n} caso(s) carregado(s) do seu computador.` : "Pasta conectada: " + raizHandle.name, "ok");
     renderTudo();
   } catch(e){ if (e.name !== "AbortError") toast("Não foi possível conectar: " + e.message, "erro"); }
 }
@@ -267,7 +282,11 @@ async function carregarDadosDaPasta(){
       const alvo = {};
       new Function("window", txt)(alvo);          // executa isolado; não toca no window real
       if (alvo.DADOS && Array.isArray(alvo.DADOS.casos)){
-        DADOS = alvo.DADOS;
+        const r = aplicarDadosValidados(alvo.DADOS);   // M08: não troca DADOS se o schema não bater
+        if (!r.ok){
+          toast(`dados.js tem ${r.erros.length} problema(s) de schema — painel manteve os dados anteriores.`, "erro");
+          return -1;
+        }
         estado.origemDados = caminho.join("/");
         salvar();
         return DADOS.casos.length;
@@ -334,11 +353,13 @@ async function carregarTudoDoDrive(){
     const nEventos = await carregarAgendasDaPasta();
     const nPastas = await contarPastasDeCaso();
     renderTudo();
-    const partes = [];
-    partes.push(nCasos ? `${nCasos} caso(s)` : `nenhum caso encontrado a partir de "${(baseHandle||raizHandle).name}" — selecione a pasta ADVOCACIA`);
-    if (nEventos) partes.push(`${nEventos} evento(s) de ${fontesAgenda.length} agenda(s)`);
-    if (nPastas) partes.push(`${nPastas} pasta(s) de cliente`);
-    toast("Carregado do Drive: " + partes.join(" · "), nCasos ? "ok" : "alerta");
+    if (nCasos >= 0){
+      const partes = [];
+      partes.push(nCasos ? `${nCasos} caso(s)` : `nenhum caso encontrado a partir de "${(baseHandle||raizHandle).name}" — selecione a pasta ADVOCACIA`);
+      if (nEventos) partes.push(`${nEventos} evento(s) de ${fontesAgenda.length} agenda(s)`);
+      if (nPastas) partes.push(`${nPastas} pasta(s) de cliente`);
+      toast("Carregado do Drive: " + partes.join(" · "), nCasos ? "ok" : "alerta");
+    }
   } catch(e){
     if (e.name !== "AbortError") toast("Falha ao carregar: " + e.message, "erro");
   } finally { if (btn) btn.disabled = false; }
@@ -487,6 +508,361 @@ function registrarFila(item){
 }
 
 /* ==========================================================================
+   Navegação somente leitura (nunca cria pasta) — usada pelas auditorias.
+   ========================================================================== */
+async function navegarSoLeitura(caminho){
+  let dir = baseHandle || raizHandle;
+  for (const parte of caminho) dir = await dir.getDirectoryHandle(parte); // sem {create:true}
+  return dir;
+}
+async function listarArquivosRecursivo(dir, profundidade){
+  const out = [];
+  if (profundidade <= 0) return out;
+  for await (const [nome, h] of dir.entries()){
+    if (nome.startsWith("_") || nome === "desktop.ini" || nome === "Thumbs.db") continue;
+    if (h.kind === "file") out.push(nome);
+    else out.push(...await listarArquivosRecursivo(h, profundidade-1));
+  }
+  return out;
+}
+function nomePastaDeCaso(c){
+  const partes = String(c.pasta||"").split(/[\\/]/).filter(Boolean);
+  return partes[partes.length-1] || null;
+}
+
+/* ==========================================================================
+   M12 + M17 — divergências entre dados.js e o disco. Só relata, nunca
+   cria, move ou apaga nada.
+   ========================================================================== */
+async function auditarDivergencias(){
+  if (!MODO_FS || !raizHandle){ toast("Conecte a pasta primeiro (Carregar do Drive).","alerta"); return; }
+  const box = $("#divergencias");
+  box.classList.remove("oculto");
+  box.innerHTML = "Auditando…";
+  try {
+    let dirClientes;
+    try { dirClientes = await navegarSoLeitura(["01_CLIENTES"]); }
+    catch(e){
+      box.innerHTML = `<div class="vazio-msg">Não encontrei a pasta "01_CLIENTES" dentro de "${esc((baseHandle||raizHandle).name)}". Conecte a pasta raiz do escritório (ADVOCACIA) e tente de novo.</div>`;
+      return;
+    }
+
+    // M17: pastas reais x casos[].pasta, nos dois sentidos
+    const pastasReais = [];
+    for await (const [nome, h] of dirClientes.entries()) if (h.kind === "directory" && !nome.startsWith("_")) pastasReais.push(nome);
+    const pastasEsperadas = new Set(DADOS.casos.map(nomePastaDeCaso).filter(Boolean));
+    const pastasOrfas = pastasReais.filter(n => !pastasEsperadas.has(n));
+    const casosSemPasta = DADOS.casos.filter(c => { const n = nomePastaDeCaso(c); return n && !pastasReais.includes(n); });
+
+    // M12: docs[] declarados x arquivos reais, por caso (só quando a pasta existe)
+    const docsFaltando = [], arquivosNaoListados = [];
+    for (const c of DADOS.casos){
+      const nomePasta = nomePastaDeCaso(c);
+      if (!nomePasta || !pastasReais.includes(nomePasta)) continue;
+      let arquivosReais;
+      try { arquivosReais = await listarArquivosRecursivo(await dirClientes.getDirectoryHandle(nomePasta), 3); }
+      catch(e){ continue; }
+      const normReais = arquivosReais.map(n => semAcento(n.toLowerCase()));
+      (c.docs||[]).forEach(d => {
+        if (!/\.[a-z0-9]{2,4}$/i.test(d)) return; // só cobra entradas que parecem nome de arquivo de verdade
+        const alvo = semAcento(d.toLowerCase());
+        if (!normReais.some(n => n.includes(alvo) || alvo.includes(n)))
+          docsFaltando.push({ caso:c.cliente, doc:d });
+      });
+      arquivosReais.forEach(nome => {
+        const norm = semAcento(nome.toLowerCase());
+        const mencionado = (c.docs||[]).some(d => { const alvo = semAcento(d.toLowerCase()); return alvo.includes(norm) || norm.includes(alvo); });
+        if (!mencionado) arquivosNaoListados.push({ caso:c.cliente, arquivo:nome });
+      });
+    }
+
+    const grupo = (titulo, itens, fmt) => itens.length ? `<div class="divergencia-grupo"><h4>${esc(titulo)} (${itens.length})</h4><ul>${itens.map(fmt).join("")}</ul></div>` : "";
+    box.innerHTML = [
+      grupo("Pastas em 01_CLIENTES sem caso correspondente em dados.js", pastasOrfas, n => `<li>${esc(n)}</li>`),
+      grupo("Casos em dados.js cuja pasta não existe no disco", casosSemPasta, c => `<li>${esc(c.cliente)} — esperada "${esc(nomePastaDeCaso(c))}"</li>`),
+      grupo("Documentos listados em docs[] não localizados no disco", docsFaltando, d => `<li>${esc(d.caso)} — "${esc(d.doc)}"</li>`),
+      grupo("Arquivos no disco não mencionados em docs[]", arquivosNaoListados, a => `<li>${esc(a.caso)} — ${esc(a.arquivo)}</li>`)
+    ].join("") || '<div class="vazio-msg">Nenhuma divergência encontrada.</div>';
+  } catch(e){ box.innerHTML = `<div class="vazio-msg">Falha ao auditar: ${esc(e.message)}</div>`; }
+}
+
+/* ==========================================================================
+   M18 — novo caso no momento zero. Cria a pasta padrão de verdade; o
+   esqueleto do caso é só copiado/baixado — dados.js continua edição manual.
+   ========================================================================== */
+const SUBPASTAS_CASO = ["01_Documentos do Cliente","02_Peticoes e Manifestacoes","03_Guias e Comprovantes","04_Estrategia e Anotacoes Internas","05_Correspondencia com Cliente"];
+function slugId(txt){ return semAcento(txt).toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/(^-|-$)/g,""); }
+function clienteParecido(nome){
+  const alvo = semAcento(nome.toLowerCase()).trim();
+  return DADOS.casos.filter(c => {
+    const existente = semAcento(c.cliente.toLowerCase()).trim();
+    return existente === alvo || existente.includes(alvo) || alvo.includes(existente);
+  });
+}
+async function criarNovoCaso(cliente, area, confirmarDuplicata){
+  if (!MODO_FS || !raizHandle){ toast("Conecte a pasta primeiro.","alerta"); return; }
+  const parecidos = clienteParecido(cliente);
+  if (parecidos.length && !confirmarDuplicata){
+    $("#nc-aviso").classList.remove("oculto");
+    $("#nc-aviso").innerHTML = `Já existe caso parecido: <strong>${parecidos.map(c=>esc(c.cliente)).join(", ")}</strong>. Clique em "Criar pasta e gerar esqueleto" de novo para criar mesmo assim.`;
+    $("#form-novo-caso").dataset.confirmar = "1";
+    return;
+  }
+  const nomePasta = `${cliente} - ${area}`.replace(/[\\/:*?"<>|]/g,"");
+  let id = slugId(cliente), tentativa = 1;
+  while (DADOS.casos.some(c => c.id === id)) id = slugId(cliente) + "-" + (++tentativa);
+  try {
+    const dirClientes = await navegar(["01_CLIENTES"]);
+    const dirCaso = await dirClientes.getDirectoryHandle(nomePasta, { create:true });
+    for (const sub of SUBPASTAS_CASO) await dirCaso.getDirectoryHandle(sub, { create:true });
+    const caminhoBase = (baseHandle||raizHandle).name + "/01_CLIENTES/" + nomePasta;
+    const esqueleto = {
+      id, cliente, clienteObs:null, titulo:`${area} — a definir`, area,
+      parteContraria:null, numeroProcesso:null, foro:null,
+      fase:"Atendimento inicial", status:"Em atendimento inicial", statusTipo:"info",
+      valorCausa:null, responsavel:null,
+      pasta:`${caminhoBase}  /* CONFIRA o caminho completo real — o navegador não revela o disco inteiro */`,
+      datasBase:{}, contatos:[], resumo:"", tese:"",
+      alertas:[], prazos:[], pendencias:[], docs:[],
+      protocolo:{ status:"nao_aplicavel", data:null, recibo:null, verificadoEm:null }
+    };
+    const texto = "    " + JSON.stringify(esqueleto, null, 2).split("\n").join("\n    ") + ",";
+    copiar(texto, `Pasta "${nomePasta}" criada. Esqueleto do caso (id: ${id}) copiado — cole dentro de casos[] em dados.js.`);
+    $("#dlg-novo-caso").close();
+    $("#nc-aviso").classList.add("oculto");
+    delete $("#form-novo-caso").dataset.confirmar;
+    $("#nc-cliente").value = ""; $("#nc-area").value = "";
+  } catch(e){ toast("Falha ao criar a pasta: " + e.message, "erro"); }
+}
+
+/* ==========================================================================
+   M20 — resumo diário (HOJE.md). Só o que cabe numa tela: vencidos sem
+   desfecho, prazos de 7 dias, protocolos não confirmados, casos parados.
+   ========================================================================== */
+function gerarResumoDiaMD(){
+  const hoje = hojeLocal();
+  const vencidos = prazosVencidosSemDesfecho();
+  const seteDias = todosPrazos().filter(p => p.dias >= 0 && p.dias <= 7);
+  const semConfirmar = protocolosSemConfirmar();
+  const parados = DADOS.casos.filter(c => scoreRisco(c).criterios.includes("pendência alta parada há mais de 14 dias"));
+  const linha = (arr, fmt, vazio) => arr.length ? arr.slice(0,10).map(fmt).join("\n") + (arr.length>10?`\n- …e mais ${arr.length-10}`:"") : `- ${vazio}`;
+  return `# Resumo do dia — ${fmtData(isoDe(hoje))}
+
+## Prazos vencidos sem desfecho (${vencidos.length})
+${linha(vencidos, p => `- **${esc(p.caso.cliente)}** — ${esc(p.titulo)} (venceu ${fmtData(p.data)})`, "nenhum")}
+
+## Prazos nos próximos 7 dias (${seteDias.length})
+${linha(seteDias, p => `- ${esc(p.caso.cliente)} — ${esc(p.titulo)} — ${fmtData(p.data)} (${fmtRelativo(p.dias)})`, "nenhum")}
+
+## Protocolos não confirmados (${semConfirmar.length})
+${linha(semConfirmar, c => `- **${esc(c.cliente)}** — tentado em ${fmtData(c.protocolo.data)}`, "nenhum")}
+
+## Casos parados há mais de 14 dias (${parados.length})
+${linha(parados, c => `- ${esc(c.cliente)}`, "nenhum")}
+`;
+}
+async function gerarResumoDia(){
+  const md = gerarResumoDiaMD();
+  if (MODO_FS && raizHandle){
+    try {
+      const dirControle = await navegar(["02_CONTROLE"]);
+      const fh = await dirControle.getFileHandle("HOJE.md", { create:true });
+      const w = await fh.createWritable(); await w.write(md); await w.close();
+      toast("02_CONTROLE/HOJE.md atualizado.","ok");
+      return;
+    } catch(e){ toast("Não deu para gravar em 02_CONTROLE — baixando em vez disso.","alerta"); }
+  }
+  baixarBlob(md, "text/markdown;charset=utf-8", "HOJE.md");
+  toast("HOJE.md baixado — pasta não está conectada.","ok");
+}
+
+/* ==========================================================================
+   Validação de schema (M08) — roda antes de qualquer render.
+   Uma vírgula sobrando em dados.js não pode derrubar o painel em branco:
+   se o schema não bate, mantém o DADOS anterior (ou vazio) e mostra
+   exatamente qual caso/campo está errado.
+   ========================================================================== */
+const ENUM_STATUS_TIPO = ["ok","alerta","perigo","info","neutro"];
+const ENUM_NIVEL_ALERTA = ["perigo","alerta","info"];
+const ENUM_PRIORIDADE = ["alta","media","baixa"];
+const ENUM_PROTOCOLO_STATUS = ["nao_aplicavel","pendente","tentado_sem_confirmacao","confirmado"];
+
+function dataISOValida(s){
+  if (typeof s !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const [a,m,d] = s.split("-").map(Number);
+  const dt = new Date(a,m-1,d);
+  return dt.getFullYear()===a && dt.getMonth()===m-1 && dt.getDate()===d;
+}
+
+function validarDados(dados){
+  const erros = [];
+  const add = (casoId, campo, msg) => erros.push({ casoId, campo, msg });
+
+  if (!dados || typeof dados !== "object"){ add(null,"raiz","window.DADOS não é um objeto."); return erros; }
+  if (!Array.isArray(dados.casos)){ add(null,"casos","DADOS.casos não é uma lista."); return erros; }
+
+  const idsVistos = new Set();
+  dados.casos.forEach((c, idx) => {
+    const rotulo = c && c.id ? c.id : `casos[${idx}]`;
+    if (!c || typeof c !== "object"){ add(rotulo,"raiz","item de casos[] não é um objeto."); return; }
+
+    ["id","cliente","titulo","area","fase","status","statusTipo","pasta"].forEach(campo => {
+      if (c[campo] == null || c[campo] === ""){ add(rotulo, campo, `campo obrigatório "${campo}" ausente ou vazio.`); }
+    });
+
+    if (c.id != null){
+      if (idsVistos.has(c.id)) add(rotulo,"id",`id duplicado: "${c.id}" já usado por outro caso.`);
+      idsVistos.add(c.id);
+    }
+
+    if (c.statusTipo != null && !ENUM_STATUS_TIPO.includes(c.statusTipo))
+      add(rotulo,"statusTipo",`valor "${c.statusTipo}" fora do enum (${ENUM_STATUS_TIPO.join(", ")}).`);
+
+    if (c.datasBase && typeof c.datasBase === "object")
+      Object.entries(c.datasBase).forEach(([chave,val]) => {
+        if (!dataISOValida(val)) add(rotulo,`datasBase.${chave}`,`data "${val}" inválida — esperado AAAA-MM-DD.`);
+      });
+
+    (c.alertas||[]).forEach((a,i) => {
+      if (!a || !ENUM_NIVEL_ALERTA.includes(a.nivel))
+        add(rotulo,`alertas[${i}].nivel`,`valor "${a&&a.nivel}" fora do enum (${ENUM_NIVEL_ALERTA.join(", ")}).`);
+    });
+
+    (c.prazos||[]).forEach((p,i) => {
+      // M13: um prazo é ou uma data fixa (AAAA-MM-DD), ou baseChave+diasUteis
+      // para o painel calcular sozinho — precisa de exatamente uma das duas formas.
+      const temDataFixa = p && p.data != null;
+      const temBaseCalculo = p && p.baseChave != null && p.diasUteis != null;
+      if (!p || (!temDataFixa && !temBaseCalculo))
+        add(rotulo,`prazos[${i}]`,"prazo sem data e sem baseChave+diasUteis para calcular.");
+      else if (temDataFixa && !dataISOValida(p.data))
+        add(rotulo,`prazos[${i}].data`,`data "${p.data}" inválida — esperado AAAA-MM-DD.`);
+      if (!p || !p.titulo) add(rotulo,`prazos[${i}].titulo`,"prazo sem título.");
+    });
+
+    (c.pendencias||[]).forEach((p,i) => {
+      if (!p || !ENUM_PRIORIDADE.includes(p.p))
+        add(rotulo,`pendencias[${i}].p`,`valor "${p&&p.p}" fora do enum (${ENUM_PRIORIDADE.join(", ")}).`);
+    });
+
+    if (c.protocolo != null){
+      if (!ENUM_PROTOCOLO_STATUS.includes(c.protocolo.status))
+        add(rotulo,"protocolo.status",`valor "${c.protocolo.status}" fora do enum (${ENUM_PROTOCOLO_STATUS.join(", ")}).`);
+      if (c.protocolo.data != null && !dataISOValida(c.protocolo.data))
+        add(rotulo,"protocolo.data",`data "${c.protocolo.data}" inválida — esperado AAAA-MM-DD.`);
+    }
+  });
+
+  return erros;
+}
+
+function mostrarErrosSchema(erros){
+  const box = $("#erros-schema");
+  if (!box) return;
+  if (!erros.length){ box.classList.add("oculto"); box.innerHTML = ""; return; }
+  box.classList.remove("oculto");
+  box.innerHTML = `<strong>${erros.length} problema(s) no schema de dados.js — corrija antes de confiar no painel:</strong>
+    <ul>${erros.slice(0,30).map(e => `<li><code>${esc(String(e.casoId))}</code> · <code>${esc(e.campo)}</code> — ${esc(e.msg)}</li>`).join("")}</ul>
+    ${erros.length>30 ? `<p>...e mais ${erros.length-30}.</p>` : ""}`;
+}
+
+/* Aplica um DADOS recém-carregado só se passar na validação; senão preserva
+   o que já estava carregado e devolve os erros para quem chamou decidir o toast. */
+function aplicarDadosValidados(candidato){
+  const erros = validarDados(candidato);
+  if (erros.length){ mostrarErrosSchema(erros); return { ok:false, erros }; }
+  DADOS = candidato;
+  mostrarErrosSchema([]);
+  return { ok:true, erros:[] };
+}
+
+/* ==========================================================================
+   Validação de número CNJ (M11) — Resolução CNJ 65/2008.
+   Formato NNNNNNN-DD.AAAA.J.TR.OOOO; DD é dígito verificador módulo 97.
+   ========================================================================== */
+function validarCNJ(numero){
+  if (typeof numero !== "string") return { valido:false, motivo:"não é texto" };
+  const m = numero.match(/^(\d{7})-?(\d{2})\.?(\d{4})\.?(\d{1})\.?(\d{2})\.?(\d{4})$/);
+  if (!m) return { valido:false, motivo:"formato diferente de NNNNNNN-DD.AAAA.J.TR.OOOO" };
+  const [, seq, dv, ano, justica, tribunal, origem] = m;
+  const resto1 = Number(seq + ano + justica) % 97;
+  const resto2 = Number(String(resto1).padStart(2,"0") + tribunal + origem) % 97;
+  const dvCalculado = String(98 - resto2).padStart(2,"0");
+  if (dvCalculado !== dv) return { valido:false, motivo:`dígito verificador incorreto — esperado ${dvCalculado}, encontrado ${dv}` };
+  return { valido:true };
+}
+
+/* ==========================================================================
+   Data-base faltante para calcular prazo (M14) — se a fase já exige um
+   marco que não foi registrado, isso é cegueira, não tranquilidade.
+   ========================================================================== */
+const REQUISITOS_DATABASE = [
+  { faseRe:/contesta/i,                    chave:"citacao",              prazoNome:"contestação" },
+  { faseRe:/r[ée]plica/i,                  chave:"intimacaoContestacao", prazoNome:"réplica" },
+  { faseRe:/recurso|apela[çc][ãa]o|agravo/i, chave:"publicacaoDecisao",  prazoNome:"recurso" },
+  { faseRe:/embargos de declara/i,         chave:"publicacaoDecisao",    prazoNome:"embargos de declaração" },
+  { faseRe:/cumprimento de senten/i,       chave:"transitoJulgado",      prazoNome:"cumprimento de sentença" }
+];
+function pendenciasDataBaseFaltante(caso){
+  const out = [];
+  REQUISITOS_DATABASE.forEach(r => {
+    if (r.faseRe.test(caso.fase||"") && !(caso.datasBase && caso.datasBase[r.chave]))
+      out.push(`Obter a data de "${r.chave}" (necessária para calcular o prazo de ${r.prazoNome}).`);
+  });
+  return out;
+}
+
+/* ==========================================================================
+   Calculadora de prazo (M13) — dias úteis, art. 224 do CPC, feriados e
+   recesso forense. Resultado sempre rotulado como ESTIMADO com a base de
+   cálculo explícita: isto não substitui conferência humana.
+   ========================================================================== */
+function pascoa(ano){
+  const a = ano % 19, b = Math.floor(ano/100), c = ano % 100;
+  const d = Math.floor(b/4), e = b % 4, f = Math.floor((b+8)/25);
+  const g = Math.floor((b-f+1)/3), h = (19*a+b-d-g+15) % 30;
+  const i = Math.floor(c/4), k = c % 4, l = (32+2*e+2*i-h-k) % 7;
+  const mm = Math.floor((a+11*h+22*l)/451);
+  const mes = Math.floor((h+l-7*mm+114)/31), dia = ((h+l-7*mm+114) % 31) + 1;
+  return new Date(ano, mes-1, dia);
+}
+function addDias(d, n){ const r = new Date(d); r.setDate(r.getDate()+n); return r; }
+function feriadosNacionaisEEstaduaisSP(ano){
+  const p = pascoa(ano);
+  return [
+    new Date(ano,0,1), new Date(ano,3,21), new Date(ano,4,1), new Date(ano,6,9) /* Revolução Constitucionalista/SP */,
+    new Date(ano,8,7), new Date(ano,9,12), new Date(ano,10,2), new Date(ano,10,15), new Date(ano,10,20),
+    new Date(ano,11,25),
+    addDias(p,-47), addDias(p,-46) /* Carnaval seg/ter */, addDias(p,-2) /* Sexta-feira Santa */, addDias(p,60) /* Corpus Christi */
+  ];
+}
+/* Feriados municipais de Botucatu: propositalmente vazio. Preencher só com
+   fonte oficial (lei municipal ou provimento do foro local) — nunca chutar
+   data de aniversário de comarca aqui. */
+const FERIADOS_LOCAIS_BOTUCATU = [];
+function ehFeriado(data){
+  const iso = isoDe(data);
+  return feriadosNacionaisEEstaduaisSP(data.getFullYear()).some(f => isoDe(f) === iso)
+      || FERIADOS_LOCAIS_BOTUCATU.includes(iso);
+}
+/* CPC art. 220: suspende os prazos de 20/dez a 20/jan, inclusive. */
+function emRecessoForense(data){
+  const m = data.getMonth(), d = data.getDate();
+  return (m===11 && d>=20) || (m===0 && d<=20);
+}
+function diaUtil(data){
+  const dow = data.getDay();
+  return dow!==0 && dow!==6 && !ehFeriado(data) && !emRecessoForense(data);
+}
+/* Conta prazo em dias úteis a partir do dia seguinte à data-base (art. 224,
+   caput, exclui o dia do começo, inclui o do vencimento). */
+function calcularPrazoUteis(dataBaseISO, quantidadeDias){
+  let cursor = parseData(dataBaseISO), contados = 0;
+  while (contados < quantidadeDias){ cursor = addDias(cursor,1); if (diaUtil(cursor)) contados++; }
+  return { data: isoDe(cursor), base: `dia útil ${quantidadeDias} a partir de ${fmtData(dataBaseISO)}, com recesso forense (20/dez–20/jan) e feriados nacionais/SP considerados` };
+}
+
+/* ==========================================================================
    Renderização
    ========================================================================== */
 function renderStatus(){
@@ -554,6 +930,17 @@ function semNumeroProcesso(){
   const preAjuizamento = /pr[ée]-ajuizamento|inicial pronta|em atendimento|coleta/i;
   return DADOS.casos.filter(c => !c.numeroProcesso && !preAjuizamento.test(c.fase || ""));
 }
+/* M11: número presente mas com dígito verificador que não bate — sinal de
+   erro de digitação, não é o mesmo problema de "número ausente". */
+function numeroProcessoInvalido(){
+  return DADOS.casos.filter(c => c.numeroProcesso && !validarCNJ(c.numeroProcesso).valido);
+}
+/* M10: protocolo tentado mas nunca confirmado, há mais de 2 dias — o caso
+   mais perigoso deste painel: parece que foi feito e pode não ter sido. */
+function protocolosSemConfirmar(){
+  return DADOS.casos.filter(c => c.protocolo && c.protocolo.status === "tentado_sem_confirmacao"
+    && c.protocolo.data && diasAte(c.protocolo.data) <= -2);
+}
 
 function renderAlertas(){
   const ordem = { perigo:0, alerta:1, info:2 }, todos = [];
@@ -561,12 +948,112 @@ function renderAlertas(){
     nivel:"alerta", caso:c,
     txt:"<strong>Sem número de processo cadastrado.</strong> A fase indica ação já ajuizada. Sem o número não há como acompanhar andamento, emitir guia ou peticionar — informe o número para destravar."
   }));
-  DADOS.casos.forEach(c => (c.alertas||[]).forEach(a => todos.push(Object.assign({}, a, { caso:c }))));
+  numeroProcessoInvalido().forEach(c => todos.push({
+    nivel:"perigo", caso:c,
+    txt:`<strong>Número de processo com dígito verificador inválido.</strong> "${esc(c.numeroProcesso)}" — ${esc(validarCNJ(c.numeroProcesso).motivo)}. Confira se não houve erro de digitação.`
+  }));
+  protocolosSemConfirmar().forEach(c => todos.push({
+    nivel:"perigo", caso:c,
+    txt:`<strong>Protocolo tentado sem confirmação há ${Math.abs(diasAte(c.protocolo.data))} dia(s).</strong> Verifique se o protocolo em ${fmtData(c.protocolo.data)} realmente entrou nos autos.`
+  }));
+  DADOS.casos.forEach(c => pendenciasDataBaseFaltante(c).forEach(txt => todos.push({
+    nivel:"perigo", caso:c, txt:`<strong>Data-base faltando para calcular prazo.</strong> ${esc(txt)}`
+  })));
+  DADOS.casos.forEach(c => (c.alertas||[]).forEach(a => {
+    let txt = a.txt;
+    if (a.ultimaVez){
+      const dias = Math.round((hojeLocal() - parseData(a.ultimaVez)) / 86400000);
+      const desde = a.primeiraVez ? ` (desde ${fmtData(a.primeiraVez)}${a.contagem?`, visto ${a.contagem}x`:""})` : "";
+      txt += ` <span class="alerta-inalterado">— inalterado há ${dias} dia(s)${desde}</span>`;
+    }
+    todos.push(Object.assign({}, a, { caso:c, txt }));
+  }));
   todos.sort((a,b) => ordem[a.nivel] - ordem[b.nivel]);
   $("#alertas").innerHTML = todos.length ? todos.map(a =>
     `<div class="alerta-item a-${a.nivel}" data-busca="${esc(a.txt.replace(/<[^>]+>/g,"") + " " + a.caso.cliente)}">
        ${ICO[a.nivel]}<div><div class="alerta-caso">${esc(a.caso.cliente)}</div>${a.txt}</div></div>`
   ).join("") : '<div class="vazio-msg">Nenhum alerta no momento.</div>';
+}
+
+/* ==========================================================================
+   Trilha de vencidos (M15) — prazo crítico que passou não some: fica
+   visível até alguém registrar um desfecho com data e justificativa.
+   ========================================================================== */
+function prazosVencidosSemDesfecho(){
+  return todosPrazos().filter(p => p.critico && p.dias < 0 && !p.resolvido);
+}
+function renderVencidos(){
+  const lista = prazosVencidosSemDesfecho();
+  const bloco = $("#vencidos-bloco");
+  bloco.classList.toggle("oculto", lista.length === 0);
+  if (!lista.length) return;
+  $("#vencidos-lista").innerHTML = lista.map(p => `<li>
+    <div class="data"><div class="d">${String(parseData(p.data).getDate()).padStart(2,"0")}</div><div class="m">${MES_ABR[parseData(p.data).getMonth()]}</div></div>
+    <div class="corpo">
+      <div class="tit">${esc(p.titulo)} <span class="rel venc">${fmtRelativo(p.dias)}</span></div>
+      <div class="meta"><span>${esc(p.caso.cliente)}</span></div>
+      <div class="vencido-form">
+        <select data-desfecho-tipo="${p.chave}">
+          <option value="">Registrar desfecho…</option>
+          <option value="cumprido">Cumprido</option>
+          <option value="perdido">Perdido</option>
+          <option value="prejudicado">Prejudicado</option>
+          <option value="reagendado">Reagendado</option>
+        </select>
+        <input type="text" data-desfecho-just="${p.chave}" placeholder="justificativa (obrigatória)">
+        <button class="btn-icone" data-desfecho-salvar="${p.chave}">Salvar</button>
+      </div>
+    </div></li>`).join("");
+}
+function registrarDesfechoVencido(chave){
+  const tipo = $(`[data-desfecho-tipo="${chave}"]`).value;
+  const just = $(`[data-desfecho-just="${chave}"]`).value.trim();
+  if (!tipo){ toast("Escolha o tipo de desfecho.","alerta"); return; }
+  if (!just){ toast("A justificativa é obrigatória.","alerta"); return; }
+  estado.vencidos[chave] = { tipo, justificativa:just, data:isoDe(hojeLocal()) };
+  salvar(); renderTudo();
+  toast("Desfecho registrado.","ok");
+}
+
+/* ==========================================================================
+   Score de risco (M19) — critério visível em cada linha, nada de mágico.
+   ========================================================================== */
+/* Roda uma vez por renderTudo(): registra quando cada pendência de
+   prioridade alta em aberto foi vista pela primeira vez, para o score de
+   risco poder medir "parada há mais de 14 dias". Grava uma vez só. */
+function atualizarPendPrimeiraVez(){
+  let mudou = false;
+  DADOS.casos.forEach(c => (c.pendencias||[]).forEach((p,i) => {
+    if (p.p !== "alta" || estado.pend[c.id+"|"+i]) return;
+    const chave = c.id+"|"+i;
+    if (!estado.pendPrimeiraVez[chave]){ estado.pendPrimeiraVez[chave] = Date.now(); mudou = true; }
+  }));
+  if (mudou) salvar();
+}
+/* Agrupa todosPrazos() por caso uma única vez — scoreRisco() é chamado uma
+   vez por caso a cada render; sem isto, cada chamada recalcularia os
+   prazos (inclusive os que envolvem calcularPrazoUteis) para todos os
+   casos de novo, custo O(n²) no número de casos. */
+function prazosPorCaso(){
+  const mapa = new Map();
+  todosPrazos().forEach(p => { if (!mapa.has(p.caso.id)) mapa.set(p.caso.id, []); mapa.get(p.caso.id).push(p); });
+  return mapa;
+}
+function scoreRisco(c, prazosCaso){
+  const criterios = [];
+  prazosCaso = prazosCaso || todosPrazos().filter(p => p.caso.id === c.id);
+  if (prazosCaso.some(p => p.critico && p.dias < 0 && !p.resolvido)){ criterios.push("prazo vencido sem desfecho"); }
+  if (c.protocolo && c.protocolo.status === "tentado_sem_confirmacao" && c.protocolo.data && diasAte(c.protocolo.data) <= -2)
+    criterios.push("protocolo sem confirmar");
+  if (prazosCaso.some(p => p.critico && p.dias >= 0 && p.dias <= 7)) criterios.push("prazo crítico em até 7 dias");
+  const pendAlta = (c.pendencias||[]).some((p,i) => {
+    if (p.p !== "alta" || estado.pend[c.id+"|"+i]) return false;
+    const vistoEm = estado.pendPrimeiraVez[c.id+"|"+i];
+    return vistoEm && (Date.now() - vistoEm) / 86400000 > 14;
+  });
+  if (pendAlta) criterios.push("pendência alta parada há mais de 14 dias");
+  if (prazosCaso.some(p => /prescri/i.test(p.tipo||p.titulo||"") && p.dias >= 0 && p.dias <= 90)) criterios.push("prescrição em até 90 dias");
+  return { pontos: criterios.length * 10, criterios };
 }
 
 function itemTL(p, mostrarCaso){
@@ -576,6 +1063,7 @@ function itemTL(p, mostrarCaso){
     ? `<span class="selo selo-neutro mini">${esc(p.rotuloFonte || "agenda externa")}</span>`
     : p.origem === "escritorio"
     ? (p.vinculado ? `<span class="selo selo-ok mini">${esc(p.vinculado.cliente)}</span>` : `<span class="selo selo-info mini">escritório</span>`)
+    : p.calculado ? `<span class="selo selo-ok mini" title="${esc(p.baseCalculo||"")}">calculado — art. 224 CPC</span>`
     : p.confirmado ? `<span class="selo selo-ok mini">confirmado</span>`
     : `<button class="selo selo-alerta mini bt" data-confirmar="${p.chave}" title="Marcar como conferido por você">estimado · confirmar</button>`;
   return `<li class="${cls}" data-busca="${esc(p.titulo + " " + p.caso.cliente + " " + (p.nota||""))}">
@@ -599,8 +1087,21 @@ function renderTimelines(){
   $("#tl-todos").innerHTML = ag.length ? ag.map(p => itemTL(p,true)).join("") : '<div class="vazio-msg">Agenda vazia.</div>';
 }
 
+/* M19: quando "Ordenar por risco" está ligado, casos com score maior vêm
+   primeiro; o critério de cada um fica visível, nunca é mágico. */
+function casosOrdenados(){
+  const mapa = prazosPorCaso();
+  const lista = DADOS.casos.map(c => ({ caso:c, score:scoreRisco(c, mapa.get(c.id)||[]) }));
+  return estado.ordemRisco ? lista.sort((a,b) => b.score.pontos - a.score.pontos) : lista;
+}
+function badgeRisco(score){
+  if (!score.criterios.length) return "";
+  return `<div class="linha-risco" title="${esc(score.criterios.join(" · "))}">⚠ ${score.criterios.map(esc).join(" · ")}</div>`;
+}
+
 function renderMiniCasos(){
-  $("#mini-casos").innerHTML = DADOS.casos.map(c => {
+  atualizarPendPrimeiraVez();
+  $("#mini-casos").innerHTML = casosOrdenados().map(({caso:c, score}) => {
     const pend = c.pendencias || [];
     const tot = pend.length, feitos = pend.filter((_,i) => estado.pend[c.id+"|"+i]).length;
     const pct = tot ? Math.round(feitos/tot*100) : 0;
@@ -610,6 +1111,7 @@ function renderMiniCasos(){
         <div><div class="nome-caso">${esc(c.cliente)}</div><div class="sub-caso">${esc(c.area)}</div></div>
         <span class="selo selo-${c.statusTipo}">${esc(c.status)}</span>
       </div>
+      ${badgeRisco(score)}
       <div class="rot-prog">Instrução do caso — ${feitos} de ${tot} itens</div>
       <div class="progresso"><i style="width:${pct}%"></i></div>
       <div class="prox-linha">${prox ? `Próximo: <strong>${esc(prox.titulo)}</strong> — ${fmtData(prox.data)} (${fmtRelativo(prox.dias)})` : "Sem prazos futuros registrados."}</div>
@@ -624,8 +1126,10 @@ function renderMiniCasos(){
   ligarZonas();
 }
 
+const PROTOCOLO_ROTULO = { nao_aplicavel:null, pendente:"Protocolo pendente", tentado_sem_confirmacao:"Protocolo sem confirmar", confirmado:"Protocolo confirmado" };
+const PROTOCOLO_SELO = { pendente:"alerta", tentado_sem_confirmacao:"perigo", confirmado:"ok" };
 function renderCasos(){
-  $("#v-casos").innerHTML = DADOS.casos.map(c => {
+  $("#casos-lista").innerHTML = casosOrdenados().map(({caso:c, score}) => {
     const campos = [["Área",c.area],["Fase",c.fase],["Parte contrária",c.parteContraria],
       ["Nº do processo",c.numeroProcesso || (semNumeroProcesso().includes(c) ? "⚠ FALTA — informar" : null)],["Foro",c.foro],["Valor da causa",moeda(c.valorCausa)],["Responsável",c.responsavel]];
     const prazos = todosPrazos().filter(p => p.caso.id === c.id)
@@ -636,7 +1140,10 @@ function renderCasos(){
         <svg class="seta" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 6l6 6-6 6"/></svg>
         <div class="cab-txt">
           <h3>${esc(c.cliente)}${c.clienteObs ? ` <span class="obs">(${esc(c.clienteObs)})</span>` : ""}</h3>
-          <div class="linha2"><span class="selo selo-${c.statusTipo}">${esc(c.status)}</span><span>${esc(c.titulo)}</span></div>
+          <div class="linha2"><span class="selo selo-${c.statusTipo}">${esc(c.status)}</span><span>${esc(c.titulo)}</span>
+            ${c.protocolo && PROTOCOLO_ROTULO[c.protocolo.status] ? `<span class="selo selo-${PROTOCOLO_SELO[c.protocolo.status]} mini">${esc(PROTOCOLO_ROTULO[c.protocolo.status])}</span>` : ""}
+          </div>
+          ${badgeRisco(score)}
         </div>
       </summary>
       <div class="caso-corpo">
@@ -647,6 +1154,7 @@ function renderCasos(){
         ${(c.contatos||[]).length ? `<div class="bloco"><h4>Contatos</h4><p>${c.contatos.map(k =>
           `${esc(k.nome)}${k.tel ? ` — <a href="tel:${k.tel.replace(/[^+\d]/g,"")}">${esc(k.tel)}</a>` : ""}`).join("<br>")}</p></div>` : ""}
         <div class="bloco"><h4>Prazos e compromissos</h4><ul class="tl compacta">${prazos.map(p => itemTL(p,false)).join("")}</ul></div>
+        ${pendenciasDataBaseFaltante(c).length ? `<div class="bloco"><h4>Data-base faltando</h4><p>${pendenciasDataBaseFaltante(c).map(t => "· " + esc(t)).join("<br>")}</p></div>` : ""}
         ${(c.docs||[]).length ? `<div class="bloco"><h4>Documentos do caso</h4><p>${c.docs.map(d => "· " + esc(d)).join("<br>")}</p></div>` : ""}
         <div class="acoes">
           <a class="btn-icone" href="${urlPasta(c.pasta)}">Abrir pasta no Windows</a>
@@ -660,6 +1168,7 @@ function renderCasos(){
 function renderPendencias(){
   $("#v-pend").innerHTML = DADOS.casos.map(c => {
     const pend = c.pendencias || [];
+    const faltantes = pendenciasDataBaseFaltante(c);
     const tot = pend.length, feitos = pend.filter((_,i) => estado.pend[c.id+"|"+i]).length;
     const pct = tot ? Math.round(feitos/tot*100) : 0;
     return `<h2 class="secao">${esc(c.cliente)} — ${feitos}/${tot} concluídos</h2>
@@ -671,7 +1180,11 @@ function renderPendencias(){
             <input type="checkbox" id="pd-${k}" data-pend="${k}" ${f?"checked":""}>
             <label class="txt" for="pd-${k}">${esc(p.t)}</label>
             <span class="tag t-${p.p}">${p.p}</span></li>`;
-        }).join("")}</ul>
+        }).join("")}
+        ${faltantes.map(t => `<li data-busca="${esc(t+" "+c.cliente)}">
+            <input type="checkbox" disabled title="Derivado automaticamente — some quando a data-base for preenchida">
+            <label class="txt">${esc(t)}</label>
+            <span class="tag t-alta" title="Derivado automaticamente do cálculo de prazo">alta · automático</span></li>`).join("")}</ul>
       </div>`;
   }).join("");
 }
@@ -1056,7 +1569,7 @@ function renderAvisoVazio(){
 
 function renderTudo(){
   renderAvisoVazio();
-  renderStatus(); renderKPIs(); renderAlertas(); renderTimelines(); renderMiniCasos();
+  renderStatus(); renderKPIs(); renderVencidos(); renderAlertas(); renderTimelines(); renderMiniCasos();
   renderCasos(); renderPendencias(); renderPastas(); renderCalendario();
   renderEscritorio(); renderAcessos(); renderPills(); renderArquivos();
   aplicarBusca();
@@ -1328,6 +1841,26 @@ function iniciar(){
   ["#f-titulo","#f-pessoa","#f-nota"].forEach(s => $(s).addEventListener("input", avaliarSugestao));
   $("#f-caso").addEventListener("change", () => $("#f-sugestao").classList.add("oculto"));
   $("#btn-carregar-drive").classList.toggle("oculto", !MODO_FS);
+  $("#ck-ordem-risco").checked = !!estado.ordemRisco;
+  $("#ck-ordem-risco").addEventListener("change", e => { estado.ordemRisco = e.target.checked; salvar(); renderTudo(); });
+  $("#bt-hoje-md").addEventListener("click", gerarResumoDia);
+  $("#bt-auditar-pastas").addEventListener("click", auditarDivergencias);
+  $("#bt-novo-caso").addEventListener("click", () => { $("#nc-aviso").classList.add("oculto"); delete $("#form-novo-caso").dataset.confirmar; $("#dlg-novo-caso").showModal(); });
+  $("#nc-cancelar").addEventListener("click", () => $("#dlg-novo-caso").close());
+  $("#form-novo-caso").addEventListener("submit", ev => {
+    ev.preventDefault();
+    const cliente = $("#nc-cliente").value.trim(), area = $("#nc-area").value.trim();
+    if (!cliente || !area) return;
+    criarNovoCaso(cliente, area, $("#form-novo-caso").dataset.confirmar === "1");
+  });
+  document.addEventListener("click", e => {
+    const btn = e.target.closest("[data-desfecho-salvar]");
+    if (btn) registrarDesfechoVencido(btn.dataset.desfechoSalvar);
+  });
+
+  // M08: valida o dados.js embutido (modo file:// ou publicado sem pasta conectada)
+  // antes de qualquer render — se estiver quebrado, mostra o motivo em vez de tela em branco.
+  if (window.DADOS) aplicarDadosValidados(window.DADOS);
 
   aplicarTema();
   renderTudo();

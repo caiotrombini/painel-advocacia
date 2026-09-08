@@ -63,8 +63,14 @@
 
 <main id="conteudo">
 
+  <div id="erros-schema" class="caixa-erro-schema oculto" role="alert"></div>
+
   <section class="painel" id="v-painel" role="tabpanel" aria-label="Painel geral">
     <div id="aviso-vazio" class="oculto"></div>
+    <div id="vencidos-bloco" class="cartao cartao-p bloco-vencidos oculto mb20">
+      <h2 class="secao-vencidos">Prazos vencidos sem desfecho</h2>
+      <ul id="vencidos-lista" class="tl"></ul>
+    </div>
     <div class="grade g4 mb20" id="kpis"></div>
     <div class="grade g2">
       <div>
@@ -80,7 +86,16 @@
     <div class="grade g2" id="mini-casos"></div>
   </section>
 
-  <section class="painel" id="v-casos" role="tabpanel" aria-label="Casos" hidden></section>
+  <section class="painel" id="v-casos" role="tabpanel" aria-label="Casos" hidden>
+    <div class="barra-acoes">
+      <button class="btn-principal" id="bt-novo-caso">+ Novo caso</button>
+      <span class="espaco"></span>
+      <label class="selo selo-neutro bt" style="cursor:pointer">
+        <input type="checkbox" id="ck-ordem-risco" style="margin-right:6px"> Ordenar por risco
+      </label>
+    </div>
+    <div id="casos-lista"></div>
+  </section>
 
   <section class="painel" id="v-agenda" role="tabpanel" aria-label="Agenda" hidden>
     <div class="grade g2 topo-alinha">
@@ -120,6 +135,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 11-2.6-6.4M21 3v6h-6"/></svg>Atualizar vínculos
       </button>
       <span class="espaco"></span>
+      <button class="btn-icone" id="bt-hoje-md" title="Gera o resumo do dia (HOJE.md)">Resumo do dia</button>
       <button class="btn-icone" id="btn-exportar" title="Baixar backup dos seus dados locais">Backup</button>
       <button class="btn-icone" id="btn-importar" title="Restaurar backup">Restaurar</button>
     </div>
@@ -144,6 +160,12 @@
   <section class="painel" id="v-pend" role="tabpanel" aria-label="Pendências" hidden></section>
 
   <section class="painel" id="v-arq" role="tabpanel" aria-label="Arquivos" hidden>
+    <div class="barra-acoes">
+      <button class="btn-icone" id="bt-auditar-pastas" title="Compara docs[] e pastas com o que existe de verdade no disco">
+        Auditar documentos e pastas
+      </button>
+    </div>
+    <div id="divergencias" class="oculto"></div>
     <div id="arq-conteudo"></div>
   </section>
 
@@ -185,6 +207,26 @@
     <div class="dlg-acoes">
       <button type="button" class="btn-icone" id="f-cancelar">Cancelar</button>
       <button type="submit" class="btn-principal">Salvar</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-novo-caso" class="dlg">
+  <form id="form-novo-caso" method="dialog">
+    <h3>Novo caso</h3>
+    <p class="ajuda">Cria a pasta padrão em 01_CLIENTES e monta o esqueleto do caso para você colar em <code>dados.js</code>. Não grava em dados.js sozinho — a edição desse arquivo continua manual, de propósito.</p>
+    <div class="campo-form larga">
+      <label for="nc-cliente">Cliente</label>
+      <input type="text" id="nc-cliente" required placeholder="Nome completo" autocomplete="off">
+    </div>
+    <div class="campo-form larga">
+      <label for="nc-area">Área</label>
+      <input type="text" id="nc-area" required placeholder="ex.: Cível, Trabalhista, Previdenciário" autocomplete="off">
+    </div>
+    <div id="nc-aviso" class="oculto sugestao"></div>
+    <div class="dlg-acoes">
+      <button type="button" class="btn-icone" id="nc-cancelar">Cancelar</button>
+      <button type="submit" class="btn-principal">Criar pasta e gerar esqueleto</button>
     </div>
   </form>
 </dialog>
